@@ -81,8 +81,7 @@ def update_record(cf, zone_id, dns_name, ip_address, ip_address_type):
             continue
 
         if ((ip_address == old_ip_address) and (proxied == old_proxied)):
-            logging.info("IP address unchanged: %s \t%s" % (dns_name, ip_address))
-            logging.info("Proxied status unchanged: %s \t%s" % (dns_name, proxied))
+            logging.info("DNS record unchanged: {:<26s} {:<34s} | Proxied: {:<14s}".format(dns_name, ip_address, str(proxied)))
             updated = True
             continue
 
@@ -99,7 +98,7 @@ def update_record(cf, zone_id, dns_name, ip_address, ip_address_type):
         except CloudFlare.exceptions.CloudFlareAPIError as e:
             logging.error("/zones.dns_records.put %s %s - API call failed" % (dns_name, e))
             return True
-        logging.info("DNS record updated: %s \t%s -> %s \t| Proxied: %s -> %s" % (dns_name, old_ip_address, ip_address, old_proxied, proxied))
+        logging.info("DNS record updated:   {:<26s} {:<15s} -> {:<15s} | Proxied: {:<5s} -> {:<5s}".format(dns_name, old_ip_address, ip_address, str(old_proxied), str(proxied)))
         updated = True
         should_inform = True
 
