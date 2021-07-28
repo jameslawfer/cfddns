@@ -55,18 +55,24 @@ def get_ip_address(endpoint):
 def update_record(cf, zone_id, dns_name, ip_address, ip_address_type):
     params = {'name': dns_name, 'match': 'all', 'type': ip_address_type}
 
+    proxied = True
+
     try:
         dns_records = cf.zones.dns_records.get(zone_id, params=params)
     except CloudFlare.exceptions.CloudFlareAPIError as e:
         exit('/zones/dns_records %s - %s - api call failed' % (dns_name, e))
+    logging.debug("dns_records: %s" % dns_records)
     updated = False
     should_inform = False
 
     for dns_record in dns_records:
         old_ip_address = dns_record['content']
         old_ip_address_type = dns_record['type']
+        dns_record_id = dns_record['id']
+        old_proxied = dns_record['proxied']
 
         if ip_address_type not in ['A', 'AAAA']:
+            # won't this always be false as ip_address_type is set in get_ip_address() with only these options
             continue
 
         if ip_address_type != old_ip_address_type:
@@ -74,18 +80,17 @@ def update_record(cf, zone_id, dns_name, ip_address, ip_address_type):
             should_inform = True
             continue
 
-        if ip_address == old_ip_address:
+        if ((ip_address == old_ip_address) and (proxied == old_proxied)):
             logging.info("IP address unchanged: %s \t%s" % (dns_name, ip_address))
+            logging.info("Proxied status unchanged: %s \t%s" % (dns_name, proxied))
             updated = True
             continue
 
-        # Yes, we need to update this record - we know it's the same address type
-
-        dns_record_id = dns_record['id']
         dns_record = {
             'name': dns_name,
             'type': ip_address_type,
-            'content': ip_address
+            'content': ip_address,
+            'proxied': proxied
         }
         try:
             dns_record = cf.zones.dns_records.put(zone_id,
@@ -94,7 +99,7 @@ def update_record(cf, zone_id, dns_name, ip_address, ip_address_type):
         except CloudFlare.exceptions.CloudFlareAPIError as e:
             logging.error("/zones.dns_records.put %s %s - API call failed" % (dns_name, e))
             return True
-        logging.info("DNS record updated: %s \t%s -> %s" % (dns_name, old_ip_address, ip_address))
+        logging.info("DNS record updated: %s \t%s -> %s \t| Proxied: %s -> %s" % (dns_name, old_ip_address, ip_address, old_proxied, proxied))
         updated = True
         should_inform = True
 
@@ -107,19 +112,21 @@ def update_record(cf, zone_id, dns_name, ip_address, ip_address_type):
     dns_record = {
         'name': dns_name,
         'type': ip_address_type,
-        'content': ip_address
+        'content': ip_address,
+        'proxied': proxied
     }
     try:
         dns_record = cf.zones.dns_records.post(zone_id, data=dns_record)
     except CloudFlare.exceptions.CloudFlareAPIError as e:
         logging.error("/zones.dns_records.post %s %s - API call failed" % (dns_name, e))
         return True
-    logging.info("DNS record created: %s \t%s" % (dns_name, ip_address))
+    logging.info("DNS record created: %s \t%s \tProxied: %s" % (dns_name, ip_address, proxied))
     return should_inform
 
 
 def update_domain(dns_name, ip_address, ip_address_type, token):
     zone_name = re.compile("\.(?=.+\.)").split(dns_name)[-1]
+    logging.debug("zone_name (regex from dns_name): %s" % zone_name)
     # print('pending: %s' % dns_name)
 
     cf = CloudFlare.CloudFlare(token=token)
@@ -127,6 +134,7 @@ def update_domain(dns_name, ip_address, ip_address_type, token):
     try:
         params = {'name': zone_name}
         zones = cf.zones.get(params=params)
+        #logging.debug("/zones.get: %s" % zones)
     except CloudFlare.exceptions.CloudFlareAPIError as e:
         logging.error("/zones '%s' - API call failed. Check if API token is set and configured correctly" % e)
         return True
@@ -147,6 +155,7 @@ def update_domain(dns_name, ip_address, ip_address_type, token):
 
     zone_name = zone['name']
     zone_id = zone['id']
+    logging.debug("zone_name: %s zone_id: %s" % (zone_name, zone_id))
 
     return update_record(cf,
                          zone_id,
@@ -164,9 +173,11 @@ def update(dns_list, token, endpoint):
 
     ip_address, ip_address_type = ip
     logging.info("WAN IP: %s" % ip_address)
+    logging.debug("ip_address_type: %s" % ip_address_type)
 
     should_inform = False
     for dns_name in dns_list:
+        logging.debug("dns_name: %s" % dns_name)
         changed = update_domain(dns_name,
                                 ip_address,
                                 ip_address_type,
@@ -194,7 +205,7 @@ def main(domains, config, debug):
     # Setup logging
     if (debug):
         logging.basicConfig(level=logging.DEBUG,
-                format = "<%(levelname).4s> %(module)s.py>>%(funcName)s() :: %(message)s")
+                format = "<%(levelname).4s> %(module)s>>%(funcName)s() :: %(message)s")
     else:
         logging.basicConfig(level = logging.INFO,
                 format = "%(message)s")
