@@ -52,10 +52,10 @@ def get_ip_address(endpoint):
     return ip_address, ip_address_type
 
 
-def update_record(cf, zone_id, dns_name, ip_address, ip_address_type):
+def update_record(cf, zone_id, dns_name, dns_config, ip_address, ip_address_type):
     params = {'name': dns_name, 'match': 'all', 'type': ip_address_type}
 
-    proxied = True
+    proxied = dns_config.get('proxied')
 
     try:
         dns_records = cf.zones.dns_records.get(zone_id, params=params)
@@ -119,11 +119,11 @@ def update_record(cf, zone_id, dns_name, ip_address, ip_address_type):
     except CloudFlare.exceptions.CloudFlareAPIError as e:
         logging.error("/zones.dns_records.post %s %s - API call failed" % (dns_name, e))
         return True
-    logging.info("DNS record created: %s \t%s \tProxied: %s" % (dns_name, ip_address, proxied))
+    logging.info("DNS record created:   {:<26s} {:<34s} | Proxied: {:<14s}".format(dns_name, ip_address, str(proxied)))
     return should_inform
 
 
-def update_domain(dns_name, ip_address, ip_address_type, token):
+def update_domain(dns_name, dns_config, ip_address, ip_address_type, token):
     zone_name = re.compile("\.(?=.+\.)").split(dns_name)[-1]
     logging.debug("zone_name (regex from dns_name): %s" % zone_name)
     # print('pending: %s' % dns_name)
@@ -159,11 +159,12 @@ def update_domain(dns_name, ip_address, ip_address_type, token):
     return update_record(cf,
                          zone_id,
                          dns_name,
+                         dns_config,
                          ip_address,
                          ip_address_type)
 
 
-def update(dns_list, token, endpoint):
+def update(domains_config, token, endpoint):
     logging.info("Checking for WAN IP updates at %s" % datetime.now())
 
     ip = get_ip_address(endpoint)
@@ -175,9 +176,11 @@ def update(dns_list, token, endpoint):
     logging.debug("ip_address_type: %s" % ip_address_type)
 
     should_inform = False
-    for dns_name in dns_list:
-        logging.debug("dns_name: %s" % dns_name)
+    for dns_name in domains_config:
+        dns_config = domains_config[dns_name]
+        logging.debug("dns_name: %s \tdns_config: %s" % (dns_name, dns_config))
         changed = update_domain(dns_name,
+                                dns_config,
                                 ip_address,
                                 ip_address_type,
                                 token=token)
@@ -188,19 +191,24 @@ def update(dns_list, token, endpoint):
 
 
 @click.command()
-@click.argument('domains', type=click.File('r'))
+@click.argument('domains',
+                type=click.File('r'))
 @click.option('--config',
               '-c',
               type=click.File('r'),
-              help='Path to config file',
+              help='Path to config file (YAML)',
               required=True)
 @click.option('--debug',
               '-d',
               help='Turn debug logging on',
               is_flag=True,
               default=False)
+@click.option('--proxy/--no-proxy',
+              help='Set default proxy value',
+              is_flag=True,
+              default=True)
 
-def main(domains, config, debug):
+def main(domains, config, debug, proxy):
     # Setup logging
     if (debug):
         logging.basicConfig(level=logging.DEBUG,
@@ -211,11 +219,10 @@ def main(domains, config, debug):
 
     logging.info("cfddns (CloudFlare Dynamic DNS) vX.X.X\n")
     logging.debug("Debug enabled")
+    logging.debug("Default proxy value -> %s" % proxy)
 
     time.tzset()
-    dns_list = domains.read().splitlines()
 
-    logging.debug(dns_list)
     logging.warning("WARNING test")
     logging.info("INFO test")
 
@@ -234,6 +241,32 @@ def main(domains, config, debug):
     logging.info("Update interval: %s seconds" % interval)
     logging.info("Endpoint: %s" % endpoint)
 
+    # Parse and clean up domains.yml configuration file
+    domains_config = yaml.full_load(domains)
+    for domain in domains_config:
+        #logging.debug("Parsing domain: %s" % domain)
+        if domains_config[domain]:
+            logging.debug("Domain configuration found for %s -> %s" % (domain, domains_config[domain]))
+            if 'proxied' in domains_config[domain]:
+                logging.debug("Proxy setting found for %s -> %s" % (domain, domains_config[domain].get('proxied')))
+                if ((domains_config[domain].get('proxied') == True) or (domains_config[domain].get('proxied') == False)):
+                    logging.debug("Proxy setting for %s is valid -> %s" % (domain, domains_config[domain].get('proxied')))
+                else:
+                    logging.debug("Proxy setting for %s is invalid, setting to default value" % domain)
+                    # set proxy default
+                    domains_config[domain]['proxied'] = proxy
+                    logging.debug("Proxy setting for %s changed -> %s" % (domain, domains_config[domain].get('proxied')))
+            else:
+                logging.debug("No proxy setting found for %s" % domain)
+                # set proxy default
+                domains_config[domain]['proxied'] = proxy
+                logging.debug("Proxy setting for %s created -> %s" % (domain, domains_config[domain].get('proxied')))
+        else:
+            logging.debug("No domain configuration found for %s" % domain)
+            # set proxy default
+            domains_config[domain] = {'proxied': proxy}
+            logging.debug("Proxy setting for %s created -> %s" % (domain, domains_config[domain].get('proxied')))
+
     log_buffer = []
 
     def logger(text):
@@ -242,7 +275,7 @@ def main(domains, config, debug):
 
     async def wrapper():
         while True:
-            should_inform = update(dns_list, token, endpoint)
+            should_inform = update(domains_config, token, endpoint)
             if should_inform and notification_enabled:
                 # Broke notifications due to use of logging module
                 log = "\n".join(log_buffer)
